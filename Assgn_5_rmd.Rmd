@@ -1,0 +1,962 @@
+---
+title: "Assignment 5"
+author: "Madhur Bansal (210572)"
+date: "2024-04-15"
+output: 
+  pdf_document:
+    toc: true
+    toc_depth: 3
+---
+
+```{r setup, include=FALSE, fig.height=4}
+knitr::opts_chunk$set(echo = TRUE, message = F, warning = F)
+```
+
+# Q1 (Ch: 4-8)
+
+We have to fit a logistic regression model using $Y_i$ as the response variable and the other seven variables as covariates.
+
+```{r Q1 Data}
+library(geoR)
+library(rjags)
+library(ggplot2)
+
+### Preparing the data
+data("gambia")
+Y <- gambia$pos
+
+# Added column of 1's for beta_0
+X <- as.matrix(subset(x = gambia, select = -c(pos)))
+X <- scale(X)
+
+print(head(gambia))
+```
+
+## a) Logistic Regression without Random Effects
+In this part, we fit the following model:
+
+$$logit[Prob(Y_i = 1)] = \Sigma_{j = 1}^{p}X_{ij}\beta_j$$
+where $Y_i$ is the response variable, $X_i$'s are the covariates, and $\beta_j$ are the regression coeff.
+
+**Note:** Since it was taking a long time to run the MCMC chain each time, I have saved the samples from earlier run in an .Rdata file and I am using them here.
+
+### JAGS code
+```{r Q1a JAGS code, eval=FALSE}
+
+### JAGS model
+modelString <- textConnection("model{
+                              
+  # Likelihood
+  for(i in 1:n)
+  {
+    Y[i] ~ dbern(q[i])
+    logit(q[i]) = inprod(X[i, ], beta[])
+  }
+  
+  # Priors
+  for(j in 1:p)
+  {
+    beta[j] ~ dnorm(0, 100^(-2))
+  }
+
+}")
+
+data.list <- list(Y = Y, X = X,
+                  n = length(Y),
+                  p = length(X[1, ]))
+model <- jags.model(file = modelString,
+                    data = data.list,
+                    n.chains = 2)
+
+# Burn-in
+update(model, 1e3)
+
+# Samples
+
+n.samples <- 1e4
+params <- c("beta")
+
+samples <- coda.samples(model = model,
+                        variable.names = params,
+                        n.iter = n.samples)
+
+# outA <- list(model = model,
+#              samples = samples)
+# save(outA, file = c('out-4A.Rdata'))
+
+```
+
+```{r Q1a Loading samples, fig.height = 8}
+load('./out-4A.Rdata')
+model <- outA$model
+samples <- outA$samples
+
+plot(samples)
+```
+
+### Conclusion
+
+From the plots we can conclude that the MCMC chains have converged.
+
+From the posterior density plots of beta, we can make the following conclusions:
+
+- beta[5] and beta[6] are centered at zero, indicating **treated** and **green** are not significant.
+
+- beta[3] > 0, indicates that the an **older** child is **more likely** to get infected.
+
+- beta[4] < 0, indicates that **use** of **bed-net reduces** the chance of getting infected.
+
+- beta[7] < 0, indicates that **presence of health-center** in village helps in **reducing** the active malaria cases.
+
+## b) Logistic Regression with Random Effects
+
+In this part, we fit the following model:
+
+$$logit[Prob(Y_i = 1)] = \Sigma_{j = 1}^{p}X_{ij}\beta_j + \alpha_{s_i}$$
+where $\alpha_l$ is the random effect based on location and $\alpha_l$ ~ $N(0, \tau^2)$ (iid)
+
+### Assigning Groups
+
+To assign groups (1, 2, ..., L) to the observations, I have created a vector **s**, that stores the group to which each observation belong.
+
+```{r Q1b Group}
+unique.coords <- unique(x = cbind(gambia$x, gambia$y))
+L <- length(unique.coords[,1])
+s <- numeric(length = length(Y))
+
+for (i in 1:L) 
+{
+  coords <- unique.coords[i, ]
+  index <- (gambia$x == coords[1] & gambia$y == coords[2])
+  s[index] <- i
+}
+
+print(head(cbind(s, gambia)))
+```
+### JAGS code
+
+**Note:** Since it was taking a long time to run the MCMC chain each time, I have saved the samples from earlier run in an .Rdata file and I am using them here.
+
+```{r Q1b JAGS code, eval=F}
+### JAGS model
+modelString <- textConnection("model{
+                              
+  # Likelihood
+  for(i in 1:n)
+  {
+    Y[i] ~ dbern(q[i])
+    logit(q[i]) = inprod(X[i, ], beta[]) + alpha[s[i]]
+  }
+  
+  # Priors
+  for(j in 1:L)
+  {
+    alpha[j] ~ dnorm(0, alpha.precision)
+  }
+  alpha.precision ~ dgamma(0.01, 0.01) 
+  tau.sq = 1/alpha.precision
+  
+  for(j in 1:p)
+  {
+    beta[j] ~ dnorm(0, 100^(-2))
+  }
+  
+}")
+
+data.list <- list(Y = Y, 
+                  X = X,
+                  s = s,
+                  n = length(Y),
+                  p = length(X[1,]),
+                  L = L)
+model <- jags.model(file = modelString,
+                    data = data.list,
+                    n.chains = 2)
+
+# Burn-in
+update(model, 1e3)
+
+# Samples
+n.samples <- 1e4
+params <- c("beta", "alpha")
+
+samples <- coda.samples(model = model,
+                        variable.names = params,
+                        n.iter = n.samples)
+```
+
+```{r Q1b Loading samples, fig.height=8}
+load('./out-4B.Rdata')
+model <- outB$model
+samples <- outB$samples
+
+plot(samples[[1]][,L:(L+3)])
+plot(samples[[1]][,(L+4):(L+7)])
+```
+
+From the plots, we can conclude that the MCMC chains have converged. 
+
+### Why Random Effects?
+Whether a child will test positive for malaria or not will depend on his/her surroundings: 
+
+- If there are already a lot of cases in an area, the chance of someone getting infected also increases. 
+
+- There may be more musquitos in a particular area, which will also increase the infection.
+
+### Spatial Plot
+```{r Q1b Plot}
+samples.mat <- as.matrix(samples[[1]][,1:L])
+samples.mean <- apply(samples.mat, 2, mean)
+
+par(mfrow = c(1,1))
+
+plot.data <- data.frame(X = unique.coords[ ,1], 
+                        Y = unique.coords[ ,2],
+                        alpha = samples.mean)
+plt <- ggplot(plot.data, aes(X, Y))+
+  geom_point(aes(color = alpha)) +
+  scale_color_gradient(low = "green", high = "red") +
+  labs(title = "Spatial plot of mean(alpha)")
+plt
+```
+
+From the plot we can locate the areas where more Malaria cases are present. The **more** the value of **alpha**, the higher are the chances of finding an infected child.
+
+# Q2 (Ch: 4-10)
+
+The objective of the question is to fit a mixture of K (= 3) normal distribution to the given observations $Y_1, Y_2, ..., Y_{82}$.
+
+```{r Q2 Load Data, echo=F, fig.height=4}
+library(MASS)
+library(rjags)
+
+data(galaxies)
+Y <- galaxies
+
+hist(Y,breaks=25)
+```
+
+## JAGS code
+```{r Q2 JAGS, fig.height = 8, fig.width = 6}
+modelString <- textConnection("model{
+                              
+  # Likelihood
+  for(i in 1:n)
+  {
+    Y[i] ~ dnorm(mu[i], tau[i])
+    mu[i] = mu.cluster[z[i]]
+    tau[i] = tau.cluster[z[i]]
+    z[i] ~ dcat(pi[1:K])
+  }
+  
+  # Priors
+  for(j in 1:K)
+  {
+    mu.cluster[j] ~ dnorm(0, 10^(-10))
+    tau.cluster[j] ~ dgamma(0.01, 0.01)
+    sig2.cluster[j] = 1/tau.cluster[j]
+  }     
+  pi[1:K] ~ ddirch(c(1, 1, 1))
+  
+  for(g in 1:G)
+  {
+    y[g] = pi[1] * dnorm(y.grid[g], mu.cluster[1], tau.cluster[1]) + 
+    pi[2] * dnorm(y.grid[g], mu.cluster[2], tau.cluster[2]) +
+    pi[3] * dnorm(y.grid[g], mu.cluster[3], tau.cluster[3])
+  }
+  
+}")
+
+# The required grid
+y.grid <- seq(from = 5000, to = 40000, by = 100)
+G <- length(y.grid)
+
+data.list <- list(Y = Y,
+                  n = length(Y),
+                  K = 3,
+                  y.grid = y.grid,
+                  G = G)
+
+model <- jags.model(file = modelString, 
+                    data = data.list, 
+                    n.chains = 1, quiet = T)
+update(model, n.iter = 1e4)
+
+# generating samples
+params <- c("mu.cluster", "sig2.cluster", "pi", "y")
+samples <- coda.samples(model = model,
+                        variable.names = params, 
+                        n.iter = 1e4)
+
+plot(samples[[1]][, 1:3])
+plot(samples[[1]][, 4:6])
+plot(samples[[1]][, 7:9])
+```
+
+From the trace plots we can observe that the MCMC chain has converged. 
+
+## Posterior density plot
+```{r Q4 posterior plot}
+y.density.samples <- as.matrix(samples[[1]][ ,10:(G+10-1)])
+y.density.median <- apply(X = y.density.samples, 
+                          MARGIN = 2, FUN = median)
+y.density.lower <- apply(X = y.density.samples, MARGIN = 2, 
+                         FUN = function(x){quantile(x , p = 0.025)})
+y.density.upper <- apply(X = y.density.samples, MARGIN = 2, 
+                         FUN = function(x){quantile(x , p = 0.975)})
+
+hist(Y, probability = T, breaks = 25,
+     xlab = "Y", ylab = 'Density',
+     main = "Gaussian Mixture Model (K = 3)")
+lines(x = y.grid, y = y.density.upper, type = 'l', col = 'red', lwd = 1)
+lines(x = y.grid, y = y.density.lower, col = 'blue', lwd = 1)
+lines(x = y.grid, y = y.density.median, col = 'black', lwd = 2)
+legend("topright", legend = c("Median", "2.5%", "97.5%"),
+       lty = 1, col = c("black", "blue", "red"), lwd = 2)
+```
+
+## Conclusion
+From the plot, we can observe that the model fits the data well. 
+
+# Q3 (Ch: 5-4)
+
+We are given the data: $Y_1 = 563, N_1 = 2820$ and $Y_2 = 10, N_2 = 27$. And we have to compare between two models:
+
+$M_1: Y_i|\lambda_i$ ~ $Poisson(N_i\lambda_i)$  $i = 1, 2$
+
+
+$M_2: Y_i|\lambda_0$ ~ $Poisson(N_i\lambda_0)$  $i = 1, 2$
+
+```{r Q3 Data, echo=F}
+library(rjags)
+
+Y1 <- 563
+N1 <- 2820
+
+Y2 <- 10
+N2 <- 27
+```
+
+## Bayes Factor
+The given snippet is for c = 1. Similarly, we can evaluate BF for c = 10.
+```{r Q3 BF1}
+c <- 1
+
+num.gamma1 <- pgamma(q = 1, shape = Y1+1, rate = N1)
+num.gamma2 <- pgamma(q = 1, shape = Y2+1, rate = N2)
+num.gamma <- num.gamma1 * num.gamma2
+
+denom.gamma <- pgamma(q = 1, shape = Y1+Y2+1, rate = N1+N2)
+
+const1 <- num.gamma / (denom.gamma * c * choose(Y1+Y2, Y1) * N2)
+const2 <- exp((Y1+Y2+1)*log(1 + N2/N1) - (Y2)*log(N2/N1))
+
+BF1.12 <- const1 * const2
+```
+
+```{r Q3 BF10, echo=F}
+c <- 10
+
+num.gamma1 <- pgamma(q = 1, shape = Y1+1, rate = N1)
+num.gamma2 <- pgamma(q = 1, shape = Y2+1, rate = N2)
+num.gamma <- num.gamma1 * num.gamma2
+
+denom.gamma <- pgamma(q = 1, shape = Y1+Y2+1, rate = N1+N2)
+
+const1 <- num.gamma / (denom.gamma * c * choose(Y1+Y2, Y1) * N2)
+const2 <- exp((Y1+Y2+1)*log(1 + N2/N1) - (Y2)*log(N2/N1))
+
+BF10.12 <- const1 * const2
+
+BF.12 <- matrix(c(BF1.12, BF10.12), nrow = 1)
+colnames(BF.12) <- c("c = 1", "c = 10")
+rownames(BF.12) <- c("BF ")
+
+print(BF.12)
+```
+
+## DIC and WAIC (c = 1)
+
+### JAGS code
+```{r Q3 JAGS}
+
+c <- 1
+
+data.list <- list(Y1 = Y1, N1 = N1,
+                  Y2 = Y2, N2 = N2, 
+                  c = c)
+
+modelString1 <- textConnection("model{
+
+  # Likelihood
+  Y1 ~ dpois(N1 * lambda1)
+  Y2 ~ dpois(N2 * lambda2)
+  
+  # Prior
+  lambda1 ~ dunif(0, c)
+  lambda2 ~ dunif(0, c)
+
+}")
+
+modelString2 <- textConnection("model{
+
+  # Likelihood
+  Y1 ~ dpois(N1 * lambda0)
+  Y2 ~ dpois(N2 * lambda0)
+  
+  # Prior
+  lambda0 ~ dunif(0, c)
+
+}")
+
+### Model 1
+model1 <- jags.model(file = modelString1,
+                     data = data.list,
+                     n.chains = 2, quiet = T)
+update(model1, n.iter = 1e4)
+params <- c("lambda1", "lambda2")
+samples1 <- coda.samples(model = model1,
+                        n.iter = 1e4,
+                        variable.names = params)
+
+plot(samples1)
+lambda1 <- samples1[[1]][ ,1]
+lambda2 <- samples1[[1]][ ,2]
+
+### Model 2
+model2 <- jags.model(file = modelString2,
+                     data = data.list,
+                     n.chains = 2, quiet = T)
+update(model2, n.iter = 1e4)
+params <- c("lambda0")
+samples2 <- coda.samples(model = model2,
+                        n.iter = 1e4,
+                        variable.names = params)
+
+plot(samples2)
+lambda0 <- samples2[[1]][ ,1]
+```
+
+### DIC
+```{r Q3 DIC1}
+
+loglike.m1.func <- function(iter)
+{
+  iter.lambda1 <- lambda1[iter]
+  iter.lambda2 <- lambda2[iter]
+  
+  loglike.Y1 <- dpois(x = Y1, N1 * iter.lambda1, log = T)
+  loglike.Y2 <- dpois(x = Y2, N2 * iter.lambda2, log = T)
+  
+  return(loglike.Y1 + loglike.Y2)
+}
+
+loglike.m2.func <- function(iter)
+{
+  iter.lambda <- lambda0[iter]
+  
+  loglike.Y1 <- dpois(x = Y1, N1 * iter.lambda, log = T)
+  loglike.Y2 <- dpois(x = Y2, N2 * iter.lambda, log = T)
+  
+  return(loglike.Y1 + loglike.Y2)
+}
+
+loglike.m1 <- sapply(1:1e4, FUN = loglike.m1.func)
+loglike.m2 <- sapply(1:1e4, FUN = loglike.m2.func)
+
+deviance.m1 <- -2 * loglike.m1
+deviance.m2 <- -2 * loglike.m2
+
+Dbar.m1 <- mean(deviance.m1) 
+Dbar.m2 <- mean(deviance.m2)
+
+loglike.thetahat.m1 <- dpois(Y1, lambda = N1 * mean(lambda1), log = T) + 
+                       dpois(Y2, lambda = N2 * mean(lambda2), log = T)
+D.thetahat.m1 <- -2 * loglike.thetahat.m1
+
+loglike.thetahat.m2 <- dpois(Y1, lambda = N1 * mean(lambda0), log = T) + 
+                       dpois(Y2, lambda = N2 * mean(lambda0), log = T)
+D.thetahat.m2 <- -2 * loglike.thetahat.m2
+
+pD.m1 <- Dbar.m1 - D.thetahat.m1 
+pD.m2 <- Dbar.m2 - D.thetahat.m2
+
+DIC.m1 <- pD.m1 + Dbar.m1 
+DIC.m2 <- pD.m2 + Dbar.m2
+
+DIC.c1 <- c(DIC.m1, DIC.m2)
+
+paste("DIC (c = 1): ", DIC.c1)
+```
+
+### WAIC
+```{r Q3 WAIC1}
+
+loglike.m1.func <- function(iter)
+{
+  iter.lambda1 <- lambda1[iter]
+  iter.lambda2 <- lambda2[iter]
+  
+  loglike.Y1 <- dpois(x = Y1, N1 * iter.lambda1, log = T)
+  loglike.Y2 <- dpois(x = Y2, N2 * iter.lambda2, log = T)
+  
+  return(c(loglike.Y1, loglike.Y2))
+}
+
+loglike.m2.func <- function(iter)
+{
+  iter.lambda <- lambda0[iter]
+  
+  loglike.Y1 <- dpois(x = Y1, N1 * iter.lambda, log = T)
+  loglike.Y2 <- dpois(x = Y2, N2 * iter.lambda, log = T)
+  
+  return(c(loglike.Y1, loglike.Y2))
+}
+
+loglike.m1 <- sapply(1:1e4, FUN = loglike.m1.func)
+loglike.m2 <- sapply(1:1e4, FUN = loglike.m2.func)
+
+posmeans.m1 <- apply(loglike.m1, 1, mean)
+posmeans.m2 <- apply(loglike.m2, 1, mean)
+
+posvars.m1 <- apply(loglike.m1, 1, var)
+posvars.m2 <- apply(loglike.m2, 1, var)
+
+pW.m1 <- sum(posvars.m1) 
+pW.m2 <- sum(posvars.m2)
+
+sum.means.m1 <- sum(posmeans.m1) 
+sum.means.m2 <- sum(posmeans.m2)
+
+WAIC.m1 <- -2 * sum.means.m1 + 2 * pW.m1
+WAIC.m2 <- -2 * sum.means.m2 + 2 * pW.m2
+
+WAIC.c1 <- c(WAIC.m1, WAIC.m2)
+paste("WAIC (c = 1): ", WAIC.c1)
+```
+
+## DIC and WAIC (c = 10)
+
+```{r Q3 c10, echo=F}
+
+c <- 10
+
+data.list <- list(Y1 = Y1, N1 = N1,
+                  Y2 = Y2, N2 = N2, 
+                  c = c)
+
+modelString1 <- textConnection("model{
+
+  # Likelihood
+  Y1 ~ dpois(N1 * lambda1)
+  Y2 ~ dpois(N2 * lambda2)
+  
+  # Prior
+  lambda1 ~ dunif(0, c)
+  lambda2 ~ dunif(0, c)
+
+}")
+
+modelString2 <- textConnection("model{
+
+  # Likelihood
+  Y1 ~ dpois(N1 * lambda0)
+  Y2 ~ dpois(N2 * lambda0)
+  
+  # Prior
+  lambda0 ~ dunif(0, c)
+
+}")
+
+### Model 1
+model1 <- jags.model(file = modelString1,
+                     data = data.list,
+                     n.chains = 2, quiet = T)
+update(model1, n.iter = 1e4)
+params <- c("lambda1", "lambda2")
+samples1 <- coda.samples(model = model1,
+                        n.iter = 1e4,
+                        variable.names = params)
+
+plot(samples1)
+lambda1 <- samples1[[1]][ ,1]
+lambda2 <- samples1[[1]][ ,2]
+
+### Model 2
+model2 <- jags.model(file = modelString2,
+                     data = data.list,
+                     n.chains = 2, quiet = T)
+update(model2, n.iter = 1e4)
+params <- c("lambda0")
+samples2 <- coda.samples(model = model2,
+                        n.iter = 1e4,
+                        variable.names = params)
+
+plot(samples2)
+lambda0 <- samples2[[1]][ ,1]
+
+loglike.m1.func <- function(iter)
+{
+  iter.lambda1 <- lambda1[iter]
+  iter.lambda2 <- lambda2[iter]
+  
+  loglike.Y1 <- dpois(x = Y1, N1 * iter.lambda1, log = T)
+  loglike.Y2 <- dpois(x = Y2, N2 * iter.lambda2, log = T)
+  
+  return(loglike.Y1 + loglike.Y2)
+}
+
+loglike.m2.func <- function(iter)
+{
+  iter.lambda <- lambda0[iter]
+  
+  loglike.Y1 <- dpois(x = Y1, N1 * iter.lambda, log = T)
+  loglike.Y2 <- dpois(x = Y2, N2 * iter.lambda, log = T)
+  
+  return(loglike.Y1 + loglike.Y2)
+}
+
+loglike.m1 <- sapply(1:1e4, FUN = loglike.m1.func)
+loglike.m2 <- sapply(1:1e4, FUN = loglike.m2.func)
+
+deviance.m1 <- -2 * loglike.m1
+deviance.m2 <- -2 * loglike.m2
+
+Dbar.m1 <- mean(deviance.m1) 
+Dbar.m2 <- mean(deviance.m2)
+
+loglike.thetahat.m1 <- dpois(Y1, lambda = N1 * mean(lambda1), log = T) + 
+                       dpois(Y2, lambda = N2 * mean(lambda2), log = T)
+D.thetahat.m1 <- -2 * loglike.thetahat.m1
+
+loglike.thetahat.m2 <- dpois(Y1, lambda = N1 * mean(lambda0), log = T) + 
+                       dpois(Y2, lambda = N2 * mean(lambda0), log = T)
+D.thetahat.m2 <- -2 * loglike.thetahat.m2
+
+pD.m1 <- Dbar.m1 - D.thetahat.m1 
+pD.m2 <- Dbar.m2 - D.thetahat.m2
+
+DIC.m1 <- pD.m1 + Dbar.m1 
+DIC.m2 <- pD.m2 + Dbar.m2
+
+DIC.c10 <- c(DIC.m1, DIC.m2)
+
+paste("DIC (c = 10): ", DIC.c10)
+
+loglike.m1.func <- function(iter)
+{
+  iter.lambda1 <- lambda1[iter]
+  iter.lambda2 <- lambda2[iter]
+  
+  loglike.Y1 <- dpois(x = Y1, N1 * iter.lambda1, log = T)
+  loglike.Y2 <- dpois(x = Y2, N2 * iter.lambda2, log = T)
+  
+  return(c(loglike.Y1, loglike.Y2))
+}
+
+loglike.m2.func <- function(iter)
+{
+  iter.lambda <- lambda0[iter]
+  
+  loglike.Y1 <- dpois(x = Y1, N1 * iter.lambda, log = T)
+  loglike.Y2 <- dpois(x = Y2, N2 * iter.lambda, log = T)
+  
+  return(c(loglike.Y1, loglike.Y2))
+}
+
+loglike.m1 <- sapply(1:1e4, FUN = loglike.m1.func)
+loglike.m2 <- sapply(1:1e4, FUN = loglike.m2.func)
+
+posmeans.m1 <- apply(loglike.m1, 1, mean)
+posmeans.m2 <- apply(loglike.m2, 1, mean)
+
+posvars.m1 <- apply(loglike.m1, 1, var)
+posvars.m2 <- apply(loglike.m2, 1, var)
+
+pW.m1 <- sum(posvars.m1) 
+pW.m2 <- sum(posvars.m2)
+
+sum.means.m1 <- sum(posmeans.m1) 
+sum.means.m2 <- sum(posmeans.m2)
+
+WAIC.m1 <- -2 * sum.means.m1 + 2 * pW.m1
+WAIC.m2 <- -2 * sum.means.m2 + 2 * pW.m2
+
+WAIC.c10 <- c(WAIC.m1, WAIC.m2)
+paste("WAIC (c = 10): ", WAIC.c10)
+```
+
+## Conclusion
+
+```{r Q3 Conclusion BF, echo=F}
+print(BF.12)
+```
+The BF for model $M_1$ compared to model $M_2$ is < 10. Hence we cannot conclude which model is better using BF.
+
+However, if we have to choose a model, we can prefer M1 as it still gives lower DIC and WAIC compared to M2.
+
+```{r Q3 Conclusion DIC WAIC, echo=F}
+conc <- rbind(DIC.c1, DIC.c10, WAIC.c1, WAIC.c10)
+rownames(conc) <- c("DIC (c = 1)",
+                    "DIC (c = 10)",
+                    "WAIC (c = 1)",
+                    "WAIC (c = 10)")
+colnames(conc) <- c("M1", "M2")
+
+print(conc)
+```
+In all cases, DIC and WAIC is smaller for $M_1$ compared to $M_2$. However, there is not any substantial evidence to prefer any one model.
+
+# Q4 (Ch: 5-6)
+
+We have to fit logistic regression model without any random effects to the gambia dataset, and use PPD checks to check if the model fits well. Since Y is either 0 or 1, using min, max, or median will not give meaningful results. Hence I have used **mean** and **SD** for PPD checks.
+
+```{r Q4 Data}
+library(geoR)
+library(rjags)
+
+### Preparing the data
+data("gambia")
+Y <- gambia$pos
+
+# Added column of 1's for beta_0
+X <- as.matrix(subset(x = gambia, select = -c(x, y, pos)))
+X <- scale(X)
+X <- cbind(1, X)
+
+print(head(gambia))
+```
+
+## JAGS code
+
+**Note:** Since it was taking a long time to run the MCMC chain each time, I have saved the samples from earlier run in an .Rdata file and I am using them here.
+
+```{r Q4 JAGS code, eval = F}
+### JAGS model
+modelString <- textConnection("model{
+                              
+  # Likelihood
+  for(i in 1:n)
+  {
+    Y[i] ~ dbern(q[i])
+    logit(q[i]) = inprod(X[i, ], beta[])
+  }
+  
+  # Priors
+  for(j in 1:p)
+  {
+    beta[j] ~ dnorm(0, 100^(-2))
+  }
+  
+  # PPD
+  for(i in 1:n)
+  {
+    Yppd[i] ~ dbern(t[i])
+    logit(t[i]) = inprod(X[i, ], beta[])
+  }
+  
+  D[1] <- mean(Yppd[])
+  D[2] <- sd(Yppd[])
+
+}")
+
+data.list <- list(Y = Y, X = X,
+                  n = length(Y),
+                  p = length(X[1, ]))
+model <- jags.model(file = modelString,
+                    data = data.list,
+                    n.chains = 2)
+
+# Burn-in
+update(model, 5e3)
+
+# Samples
+
+n.samples <- 1e4
+params <- c("D")
+
+samples <- coda.samples(model = model,
+                        variable.names = params,
+                        n.iter = n.samples)
+
+# out <- list(model = model,
+#             samples = samples)
+# save(out, file = 'out-6.Rdata')
+```
+
+```{r Q4 Loading samples, fig.height = 6}
+load('./out-6.Rdata')
+model <- out$model
+samples <- out$samples
+plot(samples)
+```
+The MCMC chains have converged for both Mean (D[1]) and SD (D[2])
+
+## PPD checks
+```{r Q4 PPD checks, fig.height = 4}
+ppd.mean <- samples[[1]][ ,1]
+ppd.sd <- samples[[1]][ ,2]
+
+par(mfrow = c(1, 2))
+
+plot(density(ppd.mean), main = "Mean Y", ylim = c(0, 34))
+abline(v = mean(Y), col = 'red')
+legend("topleft", legend = c("Mean (PPD)", "Mean (Data)"),
+       lty = 1, col = c('black', 'red'))
+pval1 <- mean(ppd.mean > mean(Y))
+
+plot(density(ppd.sd), main = "SD Y", ylim = c(0, 120))
+abline(v = sd(Y), col = 'red')
+legend("topleft", legend = c("SD (PPD)", "SD (Data)"), fill = c('black', 'red'))
+pval2 <- mean(ppd.sd > sd(Y))
+
+p.table <- matrix(data = c(pval1, pval2), nrow = 1)
+colnames(p.table) <- c("Mean", "SD")
+
+print(p.table)
+
+```
+
+## Conclusion
+
+From the plots and p value, we can conclude that the model fits the data well. 
+
+# Q5 (Ch: 5-10)
+
+We are a time series dataset where $Y_t$ is the WWW usage at time *t*. For L = 1, 2, 3, 4, we have to fit the following AR model:
+
+$$Y_t|Y_{t-1}, ..., Y_1 \sim Normal(\beta_0 + \beta_1Y_{t-1} + ... + \beta_LY_{t-L}, \sigma^2)$$
+
+And among the various models, we have to choose the best one. To choose the best model, I will use the DIC criteria.
+
+```{r Q5 Data}
+library(datasets)
+library(rjags)
+
+data("WWWusage")
+Y <- as.numeric(WWWusage)
+
+plot(WWWusage, type = 'l', lwd = 2, 
+     ylab = "Y", main = "Data (Time series)")
+```
+
+## JAGS code
+```{r Q5 JAGS}
+# JAGS model
+modelString <- "model{
+
+  # Likelihood
+  for(i in 5:n)
+  {
+    Y[i] ~ dnorm(mu[i], tau)
+    mu[i] <- beta[1] + sum(Y[(i-L):(i-1)] * beta[2:(L+1)])
+  }
+
+  # Prior
+  for(j in 1:(L+1))
+  {
+    beta[j] ~ dnorm(0, 100^(-2))
+  }
+  tau ~ dgamma(0.01, 0.01)
+  sig2 = 1/tau
+  
+}"
+```
+
+## Different values of L
+
+I have given below the code for (L = 1) case. For other values of L = 2, 3, 4, I have only shown the plots of MCMC samples. Finally I compare the DIC for different models to choose the best one.
+
+### L = 1
+```{r Q5 L1, fig.height=8}
+# L = 1
+data.list1 <- list(Y = Y, n = length(Y), L = 1)
+model1 <- jags.model(file = textConnection(modelString),
+                     data = data.list1,
+                     n.chains = 2, quiet = T)
+update(model1, n.iter = 1e4)
+params <- c("beta", "sig2")
+samples1 <- coda.samples(model = model1,
+                         variable.names = params,
+                         n.iter = 1e4,
+                         thin = 2)
+plot(samples1)
+dic1 <- dic.samples(model = model1, n.iter = 1e4)
+
+```
+
+### L = 2
+
+```{r Q5 L2, fig.height=8, echo=F}
+# L = 2
+data.list2 <- list(Y = Y, n = length(Y), L = 2)
+model2 <- jags.model(file = textConnection(modelString),
+                     data = data.list2,
+                     n.chains = 2, quiet = T)
+update(model2, n.iter = 1e4)
+params <- c("beta", "sig2")
+samples2 <- coda.samples(model = model2,
+                         variable.names = params,
+                         n.iter = 1e4)
+plot(samples2)
+dic2 <- dic.samples(model = model2, n.iter = 1e4)
+```
+
+### L = 3
+
+```{r Q5 L3, echo=F}
+# L = 3
+data.list3 <- list(Y = Y, n = length(Y), L = 3)
+model3 <- jags.model(file = textConnection(modelString),
+                     data = data.list3,
+                     n.chains = 2, quiet = T)
+update(model3, n.iter = 1e4)
+params <- c("beta", "sig2")
+samples3 <- coda.samples(model = model3,
+                         variable.names = params,
+                         n.iter = 1e4,
+                         thin = 1)
+plot(samples3)
+dic3 <- dic.samples(model = model3, n.iter = 1e4)
+```
+
+### L = 4
+
+```{r Q5 L4, echo=F}
+# L = 4
+data.list4 <- list(Y = Y, n = length(Y), L = 4)
+model4 <- jags.model(file = textConnection(modelString),
+                     data = data.list4,
+                     n.chains = 2, quiet = T)
+update(model4, n.iter = 1e4)
+params <- c("beta", "sig2")
+samples4 <- coda.samples(model = model4,
+                         variable.names = params,
+                         n.iter = 1e4,
+                         thin = 1)
+plot(samples4)
+dic4 <- dic.samples(model = model4, n.iter = 1e4)
+```
+
+## Conclusion
+
+The trace plots does not converge for $\beta_i$'s for L = 2, 3, 4. However, from the DIC values are given below, we can see that we get lowest DIC for L = 4. ($DIC_1 > DIC_2 >DIC_3>DIC_4$)
+
+Since, the chains are diverging for L = 2, 3, 4, we cannot comment on the posterior distribution. Hence, I will prefer AR(1) process.
+
+```{r Q5 conclusion, echo=F}
+print("L = 1")
+print(dic1)
+
+
+print("L = 2")
+print(dic2)
+
+
+print("L = 3")
+print(dic3)
+
+
+print("L = 4")
+print(dic4)
+```
